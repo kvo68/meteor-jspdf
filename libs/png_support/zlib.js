@@ -462,3 +462,6 @@ var FlateStream = (function() {
 
   return constructor;
 })();
+
+window.FlateStream = FlateStream;
+window.DecodeStream = DecodeStream;
