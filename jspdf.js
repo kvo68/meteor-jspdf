@@ -1,7 +1,7 @@
 /** @preserve
  * jsPDF - PDF Document creation from JavaScript
- * Version 1.0.0-trunk Built on ${buildDate}
- * Commit ${commitID}
+ * Version ${versionID}
+ *                           CommitID ${commitID}
  *
  * Copyright (c) 2010-2014 James Hall, https://github.com/MrRio/jsPDF
  *               2010 Aaron Spike, https://github.com/acspike
@@ -73,13 +73,14 @@ var jsPDF = (function(global) {
 			'c4'  : [ 649.13,  918.43], 'c5'  : [ 459.21,  649.13],
 			'c6'  : [ 323.15,  459.21], 'c7'  : [ 229.61,  323.15],
 			'c8'  : [ 161.57,  229.61], 'c9'  : [ 113.39,  161.57],
-			'c10' : [  79.37,  113.39],
+			'c10' : [  79.37,  113.39], 'dl'  : [ 311.81,  623.62],
 			'letter'            : [612,   792],
 			'government-letter' : [576,   756],
 			'legal'             : [612,  1008],
 			'junior-legal'      : [576,   360],
 			'ledger'            : [1224,  792],
-			'tabloid'           : [792,  1224]
+			'tabloid'           : [792,  1224],
+			'credit-card'       : [153,   243]
 		};
 
 	/**
@@ -228,7 +229,12 @@ var jsPDF = (function(global) {
 			out('endstream');
 		},
 		putPages = function() {
-			var n,p,arr,i,deflater,adler32,wPt = pageWidth * k, hPt = pageHeight * k;
+			var n,p,arr,i,deflater,adler32,wPt = pageWidth * k, hPt = pageHeight * k, adler32cs;
+
+			adler32cs = global.adler32cs || jsPDF.adler32cs;
+			if (compress && typeof adler32cs === 'undefined') {
+				compress = false;
+			}
 
 			// outToPages = false as set in endDocument(). out() writes to content.
 
@@ -253,17 +259,11 @@ var jsPDF = (function(global) {
 					deflater = new Deflater(6);
 					deflater.append(new Uint8Array(arr));
 					p = deflater.flush();
-					arr = [
-						new Uint8Array([120, 156]),
-						new Uint8Array(p),
-						new Uint8Array([adler32 & 0xFF, (adler32 >> 8) & 0xFF, (adler32 >> 16) & 0xFF, (adler32 >> 24) & 0xFF])
-					];
-					p = '';
-					for (i in arr) {
-						if (arr.hasOwnProperty(i)) {
-							p += String.fromCharCode.apply(null, arr[i]);
-						}
-					}
+					arr = new Uint8Array(p.length + 6);
+					arr.set(new Uint8Array([120, 156])),
+					arr.set(p, 2);
+					arr.set(new Uint8Array([adler32 & 0xFF, (adler32 >> 8) & 0xFF, (adler32 >> 16) & 0xFF, (adler32 >> 24) & 0xFF]), p.length+2);
+					p = String.fromCharCode.apply(null, arr);
 					out('<</Length ' + p.length + ' /Filter [/FlateDecode]>>');
 				} else {
 					out('<</Length ' + p.length + '>>');
@@ -412,13 +412,13 @@ var jsPDF = (function(global) {
 				try {
 					return fn.apply(this, arguments);
 				} catch (e) {
-					var m = "Error in function " + this + "." + fn.name + ": " + e.message;
+					var stack = e.stack || '';
+					if(~stack.indexOf(' at ')) stack = stack.split(" at ")[1];
+					var m = "Error in function " + stack.split("\n")[0].split('<')[0] + ": " + e.message;
 					if(global.console) {
-						var stack = (e.stack || new Error().stack || '').split("\n");
-						console.log(m, stack.map(function(s) {
-							return s.replace(/^(.*@).+\//,'$1');
-						}).join("\n"), e);
+						console.log(m, e);
 						if(global.alert) alert(m);
+						console.trace();
 					} else {
 						throw new Error(m);
 					}
@@ -562,7 +562,7 @@ var jsPDF = (function(global) {
 				newtext.push(bch);
 				newtext.push(ch - (bch << 8));
 			}
-			return String.fromCharCode.apply(undef, newtext);
+			return String.fromCharCode.apply(undefined, newtext);
 		},
 		pdfEscape = function(text, flags) {
 			/**
@@ -583,7 +583,7 @@ var jsPDF = (function(global) {
 		putInfo = function() {
 			out('/Producer (jsPDF ' + jsPDF.version + ')');
 			for(var key in documentProperties) {
-				if(documentProperties.hasOwnProperty(key)) {
+				if(documentProperties.hasOwnProperty(key) && documentProperties[key]) {
 					out('/'+key.substr(0,1).toUpperCase() + key.substr(1)
 						+' (' + pdfEscape(documentProperties[key]) + ')');
 				}
@@ -711,21 +711,33 @@ var jsPDF = (function(global) {
 			return content.join('\n');
 		},
 		getStyle = function(style) {
-			// see Path-Painting Operators of PDF spec
+			// see path-painting operators in PDF spec
 			var op = 'S'; // stroke
 			if (style === 'F') {
 				op = 'f'; // fill
 			} else if (style === 'FD' || style === 'DF') {
 				op = 'B'; // both
+			} else if (style === 'f' || style === 'f*' || style === 'B' || style === 'B*') {
+				/*
+				Allow direct use of these PDF path-painting operators:
+				- f	fill using nonzero winding number rule
+				- f*	fill using even-odd rule
+				- B	fill then stroke with fill using non-zero winding number rule
+				- B*	fill then stroke with fill using even-odd rule
+				*/
+				op = style;
 			}
 			return op;
 		},
-		getBlob = function() {
+		getArrayBuffer = function() {
 			var data = buildDocument(), len = data.length,
 				ab = new ArrayBuffer(len), u8 = new Uint8Array(ab);
 
 			while(len--) u8[len] = data.charCodeAt(len);
-			return new Blob([ab], { type : "application/pdf" });
+			return ab;
+		},
+		getBlob = function() {
+			return new Blob([getArrayBuffer()], { type : "application/pdf" });
 		},
 		/**
 		 * Generates the PDF document.
@@ -751,7 +763,14 @@ var jsPDF = (function(global) {
 						}
 					}
 					saveAs(getBlob(), options);
+					if(typeof saveAs.unload === 'function') {
+						if(global.setTimeout) {
+							setTimeout(saveAs.unload,70);
+						}
+					}
 					break;
+				case 'arraybuffer':
+					return getArrayBuffer();
 				case 'blob':
 					return getBlob();
 				case 'datauristring':
@@ -770,16 +789,17 @@ var jsPDF = (function(global) {
 			// @TODO: Add different output options
 		});
 
-		if (unit === 'pt') {
-			k = 1;
-		} else if (unit === 'mm') {
-			k = 72 / 25.4;
-		} else if (unit === 'cm') {
-			k = 72 / 2.54;
-		} else if (unit === 'in') {
-			k = 72;
-		} else {
-			throw('Invalid unit: ' + unit);
+		switch (unit) {
+			case 'pt':  k = 1;          break;
+			case 'mm':  k = 72 / 25.4;  break;
+			case 'cm':  k = 72 / 2.54;  break;
+			case 'in':  k = 72;         break;
+			case 'px':  k = 96 / 72;    break;
+			case 'pc':  k = 12;         break;
+			case 'em':  k = 12;         break;
+			case 'ex':  k = 6;          break;
+			default:
+				throw ('Invalid unit: ' + unit);
 		}
 
 		// Dimensions are stored as user units and converted to points on output
@@ -1000,7 +1020,7 @@ var jsPDF = (function(global) {
 		 * @param {Number} x Coordinate (in units declared at inception of PDF document) against left edge of the page
 		 * @param {Number} y Coordinate (in units declared at inception of PDF document) against upper edge of the page
 		 * @param {Number} scale (Defaults to [1.0,1.0]) x,y Scaling factor for all vectors. Elements can be any floating number Sub-one makes drawing smaller. Over-one grows the drawing. Negative flips the direction.
-		 * @param {String} style One of 'S' (the default), 'F', 'FD' or 'DF'.  'S' draws just the curve. 'F' fills the region defined by the curves. 'DF' or 'FD' draws the curves and fills the region.
+		 * @param {String} style A string specifying the painting style or null.  Valid styles include: 'S' [default] - stroke, 'F' - fill,  and 'DF' (or 'FD') -  fill then stroke. A null value postpones setting the style so that a shape may be composed using multiple method calls. The last drawing method call used to define the shape should not have a null style argument.
 		 * @param {Boolean} closed If true, the path is closed with a straight line from the end of the last curve to the starting point.
 		 * @function
 		 * @returns {jsPDF}
@@ -1022,7 +1042,6 @@ var jsPDF = (function(global) {
 				lines = tmp;
 			}
 
-			style = getStyle(style);
 			scale = scale || [1, 1];
 
 			// starting point
@@ -1067,7 +1086,9 @@ var jsPDF = (function(global) {
 			}
 
 			// stroking / filling / both the path
-			out(style);
+			if (style !== null) {
+				out(getStyle(style));
+			}
 			return this;
 		};
 
@@ -1078,7 +1099,7 @@ var jsPDF = (function(global) {
 		 * @param {Number} y Coordinate (in units declared at inception of PDF document) against upper edge of the page
 		 * @param {Number} w Width (in units declared at inception of PDF document)
 		 * @param {Number} h Height (in units declared at inception of PDF document)
-		 * @param {String} style (Defaults to active fill/stroke style) A string signalling if stroke, fill or both are to be applied.
+		 * @param {String} style A string specifying the painting style or null.  Valid styles include: 'S' [default] - stroke, 'F' - fill,  and 'DF' (or 'FD') -  fill then stroke. A null value postpones setting the style so that a shape may be composed using multiple method calls. The last drawing method call used to define the shape should not have a null style argument.
 		 * @function
 		 * @returns {jsPDF}
 		 * @methodOf jsPDF#
@@ -1091,9 +1112,13 @@ var jsPDF = (function(global) {
 					f2((pageHeight - y) * k),
 					f2(w * k),
 					f2(-h * k),
-					're',
-					op
+					're'
 				].join(' '));
+
+			if (style !== null) {
+				out(getStyle(style));
+			}
+
 			return this;
 		};
 
@@ -1106,7 +1131,7 @@ var jsPDF = (function(global) {
 		 * @param {Number} y2 Coordinate (in units declared at inception of PDF document) against upper edge of the page
 		 * @param {Number} x3 Coordinate (in units declared at inception of PDF document) against left edge of the page
 		 * @param {Number} y3 Coordinate (in units declared at inception of PDF document) against upper edge of the page
-		 * @param {String} style (Defaults to active fill/stroke style) A string signalling if stroke, fill or both are to be applied.
+		 * @param {String} style A string specifying the painting style or null.  Valid styles include: 'S' [default] - stroke, 'F' - fill,  and 'DF' (or 'FD') -  fill then stroke. A null value postpones setting the style so that a shape may be composed using multiple method calls. The last drawing method call used to define the shape should not have a null style argument.
 		 * @function
 		 * @returns {jsPDF}
 		 * @methodOf jsPDF#
@@ -1136,7 +1161,7 @@ var jsPDF = (function(global) {
 		 * @param {Number} h Height (in units declared at inception of PDF document)
 		 * @param {Number} rx Radius along x axis (in units declared at inception of PDF document)
 		 * @param {Number} rx Radius along y axis (in units declared at inception of PDF document)
-		 * @param {String} style (Defaults to active fill/stroke style) A string signalling if stroke, fill or both are to be applied.
+		 * @param {String} style A string specifying the painting style or null.  Valid styles include: 'S' [default] - stroke, 'F' - fill,  and 'DF' (or 'FD') -  fill then stroke. A null value postpones setting the style so that a shape may be composed using multiple method calls. The last drawing method call used to define the shape should not have a null style argument.
 		 * @function
 		 * @returns {jsPDF}
 		 * @methodOf jsPDF#
@@ -1169,15 +1194,14 @@ var jsPDF = (function(global) {
 		 * @param {Number} y Coordinate (in units declared at inception of PDF document) against upper edge of the page
 		 * @param {Number} rx Radius along x axis (in units declared at inception of PDF document)
 		 * @param {Number} rx Radius along y axis (in units declared at inception of PDF document)
-		 * @param {String} style (Defaults to active fill/stroke style) A string signalling if stroke, fill or both are to be applied.
+		 * @param {String} style A string specifying the painting style or null.  Valid styles include: 'S' [default] - stroke, 'F' - fill,  and 'DF' (or 'FD') -  fill then stroke. A null value postpones setting the style so that a shape may be composed using multiple method calls. The last drawing method call used to define the shape should not have a null style argument.
 		 * @function
 		 * @returns {jsPDF}
 		 * @methodOf jsPDF#
 		 * @name ellipse
 		 */
 		API.ellipse = function(x, y, rx, ry, style) {
-			var op = getStyle(style),
-				lx = 4 / 3 * (Math.SQRT2 - 1) * rx,
+			var lx = 4 / 3 * (Math.SQRT2 - 1) * rx,
 				ly = 4 / 3 * (Math.SQRT2 - 1) * ry;
 
 			out([
@@ -1217,9 +1241,13 @@ var jsPDF = (function(global) {
 					f2((pageHeight - (y + ly)) * k),
 					f2((x + rx) * k),
 					f2((pageHeight - y) * k),
-					'c',
-					op
+					'c'
 				].join(' '));
+
+			if (style !== null) {
+				out(getStyle(style));
+			}
+
 			return this;
 		};
 
@@ -1229,7 +1257,7 @@ var jsPDF = (function(global) {
 		 * @param {Number} x Coordinate (in units declared at inception of PDF document) against left edge of the page
 		 * @param {Number} y Coordinate (in units declared at inception of PDF document) against upper edge of the page
 		 * @param {Number} r Radius (in units declared at inception of PDF document)
-		 * @param {String} style (Defaults to active fill/stroke style) A string signalling if stroke, fill or both are to be applied.
+		 * @param {String} style A string specifying the painting style or null.  Valid styles include: 'S' [default] - stroke, 'F' - fill,  and 'DF' (or 'FD') -  fill then stroke. A null value postpones setting the style so that a shape may be composed using multiple method calls. The last drawing method call used to define the shape should not have a null style argument.
 		 * @function
 		 * @returns {jsPDF}
 		 * @methodOf jsPDF#
@@ -1495,7 +1523,7 @@ var jsPDF = (function(global) {
 		 * @name setTextColor
 		 */
 		API.setTextColor = function(r, g, b) {
-			if ((typeof r == 'string') && /^#[0-9A-Fa-f]{6}$/.test(r)) {
+			if ((typeof r === 'string') && /^#[0-9A-Fa-f]{6}$/.test(r)) {
 				var hex = parseInt(r.substr(1), 16);
 				r = (hex >> 16) & 255;
 				g = (hex >> 8) & 255;
@@ -1671,7 +1699,9 @@ var jsPDF = (function(global) {
 	jsPDF.version = "1.0.0-trunk";
 
 	if (typeof define === 'function') {
-		define(function() {return jsPDF});
+		define(function() {
+			return jsPDF;
+		});
 	} else {
 		global.jsPDF = jsPDF;
 	}

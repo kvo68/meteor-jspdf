@@ -3,24 +3,37 @@
 # Build script for jsPDF
 # (c) 2014 Diego Casorran
 #
-# NOTE: Still relying on wak's wscript.py
-#       to generate dist/jspdf.source.js
-#
-# WARNING: I'm Ugly. Improve me, please.
-#
 
 output=dist/jspdf.min.js
 options="-m -c --wrap --stats"
+version="`python -c 'import time;t=time.gmtime(time.time());print("1.%d.%d" % (t[0] - 2014, t[7]))'`"
 libs="`find libs/* -maxdepth 2 -type f | grep .js$ | grep -v -E '(\.min|BlobBuilder\.js$|Downloadify|demo|deps|test)'`"
 files="jspdf.js jspdf.plugin*js"
-commit=`git rev-parse HEAD`
 build=`date +%Y-%m-%dT%H:%M`
+commit=`git rev-parse --short=10 HEAD`
+whoami=`whoami`
 
 # Update submodules
 git submodule foreach git pull origin master
 
+# Update Bower
+cat bower \
+	| sed "s/\"1\.0\.0\"/\"${version}\"/" >bower.json
+
+# Fix conflict with adler32
+adler1="libs/adler32cs.js/adler32cs.js"
+adler2="adler32-tmp.js"
+cat ${adler1} \
+	| sed -e 's/this, function/jsPDF, function/' \
+	| sed -e 's/typeof define/0/' > $adler2
+libs=${libs/$adler1/$adler2}
+
 # Build dist files
-wak.py && uglifyjs ${options} -o ${output} ${libs} ${files}
+cat ${files} ${libs} \
+	| sed s/\${versionID}/${version}-git\ Built\ on\ ${build}/ \
+	| sed s/\${commitID}/${commit}/ \
+	| sed "s/\"1\.0\.0-trunk\"/\"${version}-debug ${build}:${whoami}\"/" >${output/min/debug}
+uglifyjs ${options} -o ${output} ${files} ${libs}
 
 # Pretend license information to minimized file
 for fn in ${files} ${libs}; do
@@ -32,7 +45,7 @@ for fn in ${files} ${libs}; do
 	
 	if test "x$fn" = "xjspdf.js"; then
 		cat ${output}.x \
-			| sed s/\${buildDate}/${build}/ \
+			| sed s/\${versionID}/${version}-git\ Built\ on\ ${build}/ \
 			| sed s/\${commitID}/${commit}/ >> ${output}.tmp
 	else
 		cat ${output}.x \
@@ -41,5 +54,34 @@ for fn in ${files} ${libs}; do
 	fi
 done
 cat ${output} >> ${output}.tmp
-cat ${output}.tmp | sed '/^\s*$/d' | sed "s/\"1\.0\.0-trunk\"/\"1.0.0-trunk ${build}\"/" > ${output}
-rm -f ${output}.tmp ${output}.x
+cat ${output}.tmp | sed '/^\s*$/d' | sed "s/\"1\.0\.0-trunk\"/\"${version}-git ${build}:${whoami}\"/" > ${output}
+rm -f ${output}.tmp ${output}.x $adler2
+
+
+# Check options
+while [ $# -gt 0 ]
+	do
+		case "$1" in
+			-c|-commit)
+				shift
+				git_commit="$1"
+				;;
+			-p|-push)
+				git_push=1
+				;;
+			*)
+				break
+				;;
+		esac
+		shift
+done
+
+if [ "$git_push" = "1" -a -z "$git_commit" ]; then
+	git_commit="New dist files."
+fi
+if [ -n "$git_commit" ]; then
+	git commit -a -m "$git_commit"
+fi
+if [ "$git_push" = "1" ]; then
+	git push
+fi
